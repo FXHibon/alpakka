@@ -8,7 +8,7 @@ import akka.Done
 import akka.annotation.InternalApi
 import akka.stream.alpakka.amqp._
 import akka.stream.alpakka.amqp.scaladsl.CommittableIncomingMessage
-import akka.stream.stage.{GraphStage, GraphStageLogic, OutHandler}
+import akka.stream.stage.{GraphStageLogic, GraphStageWithMaterializedValue, OutHandler}
 import akka.stream.{Attributes, Outlet, SourceShape}
 import akka.util.ByteString
 import com.rabbitmq.client.AMQP.BasicProperties
@@ -30,7 +30,7 @@ private final case class NackArguments(deliveryTag: Long, multiple: Boolean, req
  */
 @InternalApi
 private[amqp] final class AmqpSourceStage(settings: AmqpSourceSettings, bufferSize: Int)
-    extends GraphStage[SourceShape[CommittableIncomingMessage]] { stage =>
+    extends GraphStageWithMaterializedValue[SourceShape[CommittableIncomingMessage], Future[Done]] { stage =>
 
   val out = Outlet[CommittableIncomingMessage]("AmqpSource.out")
 
@@ -38,8 +38,9 @@ private[amqp] final class AmqpSourceStage(settings: AmqpSourceSettings, bufferSi
 
   override protected def initialAttributes: Attributes = Attributes.name("AmqpSource")
 
-  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
-    new GraphStageLogic(shape) with AmqpConnectorLogic {
+  override def createLogicAndMaterializedValue(inheritedAttributes: Attributes): (GraphStageLogic, Future[Done]) = {
+    val materializedValuePromise = Promise[Done]()
+    val logic = new GraphStageLogic(shape) with AmqpConnectorLogic {
 
       override val settings = stage.settings
 
@@ -47,6 +48,7 @@ private[amqp] final class AmqpSourceStage(settings: AmqpSourceSettings, bufferSi
       private var unackedMessages = 0
 
       override def whenConnected(): Unit = {
+        materializedValuePromise.complete(Success(Done))
         import scala.collection.JavaConverters._
         channel.basicQos(bufferSize)
         val consumerCallback = getAsyncCallback(handleDelivery)
@@ -168,5 +170,7 @@ private[amqp] final class AmqpSourceStage(settings: AmqpSourceSettings, bufferSi
         unackedMessages += 1
       }
     }
+    (logic, materializedValuePromise.future)
+  }
 
 }
